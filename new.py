@@ -17,6 +17,7 @@ procesos_listos = []
 procesos_bloqueados = []
 procesos_terminados = []
 recursos_semaforos = [threading.Semaphore(1), threading.Semaphore(1), threading.Semaphore(1)]  # Semáforos para los recursos R0, R1, R2
+procesos_ocupando_recurso = [None, None, None]  # Lista para rastrear qué proceso tiene cada recurso
 proceso_ejecucion = None
 
 # Clase para representar un proceso
@@ -25,7 +26,7 @@ class Proceso:
         self.id = id
         self.memoria = memoria
         self.estado = 'Nuevos'
-        self.veces_bloqueado = 0  # Nuevo atributo para contar las veces que ha sido bloqueado
+        self.veces_bloqueado = 0  # Atributo para contar las veces que ha sido bloqueado
         self.recurso = random.randint(0, 2)  # Asigna aleatoriamente R0, R1 o R2
         self.paginas = []  # Páginas asignadas en la memoria principal
         self.tiene_recurso = False  # Indica si este proceso tiene bloqueado un recurso
@@ -59,17 +60,8 @@ def liberar_paginas(proceso):
         MEMORIA_USADA -= TAMANO_PAGINA
     proceso.paginas = []
 
-# Función para crear procesos aleatorios
-def crear_procesos_automaticos():
-    while True:
-        if len(procesos) < 30:  # Máximo 30 procesos simultáneos
-            memoria_necesaria = random.randint(50, 200)
-            agregar_proceso(memoria_necesaria)
-        time.sleep(4)
-
-# Función para agregar un proceso (manual o aleatorio)
+# Función para agregar un proceso
 def agregar_proceso(memoria_necesaria):
-    global MEMORIA_USADA
     proceso = Proceso(len(procesos) + 1, memoria_necesaria)
 
     if asignar_paginas(proceso):
@@ -81,8 +73,8 @@ def agregar_proceso(memoria_necesaria):
 
     actualizar_interfaz()
 
+# Función para mover procesos de Nuevos a Listos
 def nuevo_a_listo():
-    global MEMORIA_USADA
     while True:
         for proceso in procesos_nuevos[:]:
             if asignar_paginas(proceso):
@@ -90,11 +82,9 @@ def nuevo_a_listo():
                 procesos_listos.append(proceso)
                 proceso.estado = 'Listo'
                 actualizar_interfaz()
-            else:
-                mensaje_error.config(text="Memoria insuficiente. El proceso se mantiene en Nuevos.")
         time.sleep(3)
 
-# Función para manejar los procesos bloqueados y liberarlos cada 5 segundos si tenían un recurso
+# Función para manejar los procesos bloqueados y liberarlos cada 5 segundos
 def revisar_procesos_bloqueados():
     while True:
         for proceso in procesos_bloqueados[:]:
@@ -108,7 +98,7 @@ def revisar_procesos_bloqueados():
 
 # Función para simular la ejecución de procesos
 def ejecutar_procesos():
-    global MEMORIA_USADA, proceso_ejecucion
+    global proceso_ejecucion
     while True:
         if procesos_listos:
             proceso_ejecucion = procesos_listos.pop(0)  # FIFO, obtenemos el primer proceso listo
@@ -118,23 +108,26 @@ def ejecutar_procesos():
             if recurso_semaforo.acquire(blocking=False):
                 # Asignamos el recurso
                 proceso_ejecucion.tiene_recurso = True  # Indica que tiene el recurso
+                procesos_ocupando_recurso[proceso_ejecucion.recurso] = proceso_ejecucion.id  # Asigna el proceso al recurso
                 proceso_ejecucion.estado = 'Ejecutando'
                 actualizar_interfaz()
                 time.sleep(3)  # Simula el tiempo de ejecución del proceso
 
-                if random.random() < 0.5:  # Simular bloqueo (50% de probabilidad)
+                # Simular que el proceso pasa por bloqueado hasta 3 veces
+                if proceso_ejecucion.veces_bloqueado < 3:
+                    proceso_ejecucion.veces_bloqueado += 1
                     proceso_ejecucion.estado = 'Bloqueado'
                     procesos_bloqueados.append(proceso_ejecucion)
-                    mensaje_error.config(text=f"El Proceso {proceso_ejecucion.id} se ha bloqueado durante la ejecución.")
+                    mensaje_error.config(text=f"El Proceso {proceso_ejecucion.id} se ha bloqueado durante la ejecución (bloqueo {proceso_ejecucion.veces_bloqueado}/3).")
                 else:
                     proceso_ejecucion.estado = 'Terminado'
                     liberar_paginas(proceso_ejecucion)
                     procesos_terminados.append(proceso_ejecucion)
+
+                    # Liberar el recurso (semáforo) solo cuando el proceso ha terminado
+                    recurso_semaforo.release()
+                    procesos_ocupando_recurso[proceso_ejecucion.recurso] = None  # Liberar el recurso
                     proceso_ejecucion = None
-
-                # Liberar el recurso (semáforo)
-                recurso_semaforo.release()
-
             else:
                 # Si el recurso está ocupado, el proceso se bloquea
                 proceso_ejecucion.estado = 'Bloqueado'
@@ -144,7 +137,7 @@ def ejecutar_procesos():
         actualizar_interfaz()
         time.sleep(1)
 
-# Función para manejar el evento de agregar un proceso manualmente
+# Función para agregar un proceso manualmente
 def agregar_proceso_manual():
     try:
         memoria_necesaria = int(memoria_entry.get())
@@ -189,66 +182,85 @@ def actualizar_interfaz():
     # Mostrar procesos en memoria
     mostrar_procesos_en_memoria()
 
-def mostrar_procesos_en_memoria():
-    # Limpiar el canvas
-    canvas.delete("all")
+    # Actualizar estado de los recursos
+    actualizar_estado_recursos()
 
-    # Dibujar las páginas de memoria
+# Función para mostrar visualmente el uso de la memoria
+def mostrar_procesos_en_memoria():
+    canvas.delete("all")  # Limpiar el canvas
+
     for i in range(NUMERO_PAGINAS):
         x0, y0 = (i % 10) * 50, (i // 10) * 50
-        x1, y1 = x0 + 40, y0 + 40
-        proceso_id = paginas_memoria[i]
-        color = "lightgreen" if proceso_id else "white"
+        x1, y1 = x0 + 50, y0 + 50
+
+        if paginas_memoria[i]:
+            color = "lightgreen"
+        else:
+            color = "lightblue"
+
         canvas.create_rectangle(x0, y0, x1, y1, fill=color)
-        if proceso_id:
-            canvas.create_text((x0 + 20, y0 + 20), text=str(proceso_id))
+        canvas.create_text((x0 + x1) // 2, (y0 + y1) // 2, text=str(paginas_memoria[i]) if paginas_memoria[i] else "", font=("Arial", 8))
 
-# Configuración de la interfaz gráfica
+# Función para actualizar el estado de los recursos y mostrar qué proceso los ocupa
+def actualizar_estado_recursos():
+    estado_recursos = []
+    for i, semaforo in enumerate(recursos_semaforos):
+        if semaforo._value == 0:
+            proceso_id = procesos_ocupando_recurso[i]
+            estado_recursos.append(f"Recurso R{i}: Ocupado por Proceso {proceso_id}")
+        else:
+            estado_recursos.append(f"Recurso R{i}: Libre")
+    recursos_label.config(text="\n".join(estado_recursos))
+
+# Configuración de la ventana principal
 root = tk.Tk()
-root.title("Simulador de Gestión de Procesos y Memoria")
+root.title("Gestión de Procesos")
 
-# Sección de memoria
+# Elementos de la interfaz gráfica
 memoria_label = tk.Label(root, text=f"Memoria Usada: {MEMORIA_USADA}/{MEMORIA_TOTAL} MB")
-memoria_label.grid(row=0, column=0, columnspan=2)
+memoria_label.pack()
 
-# Lista de procesos
-nuevos_listbox = tk.Listbox(root)
-nuevos_listbox.grid(row=1, column=0)
-listos_listbox = tk.Listbox(root)
-listos_listbox.grid(row=1, column=1)
-bloqueados_listbox = tk.Listbox(root)
-bloqueados_listbox.grid(row=1, column=2)
-terminados_listbox = tk.Listbox(root)
-terminados_listbox.grid(row=1, column=3)
-
-# Etiquetas de cada lista
-tk.Label(root, text="Nuevos").grid(row=2, column=0)
-tk.Label(root, text="Listos").grid(row=2, column=1)
-tk.Label(root, text="Bloqueados").grid(row=2, column=2)
-tk.Label(root, text="Terminados").grid(row=2, column=3)
-
-# Sección para mostrar el proceso en ejecución
-ejecucion_label = tk.Label(root, text="Proceso en ejecución:")
-ejecucion_label.grid(row=3, column=0, columnspan=2)
-
-# Entrada de memoria para agregar procesos manualmente
 memoria_entry = tk.Entry(root)
-memoria_entry.grid(row=4, column=0)
-tk.Button(root, text="Agregar Proceso Manual", command=agregar_proceso_manual).grid(row=4, column=1)
-tk.Button(root, text="Agregar Proceso Aleatorio", command=agregar_proceso_aleatorio).grid(row=4, column=2)
+memoria_entry.pack()
 
-# Mensaje de error
-mensaje_error = tk.Label(root, text="", fg="red")
-mensaje_error.grid(row=5, column=0, columnspan=4)
+agregar_manual_button = tk.Button(root, text="Agregar Proceso Manualmente", command=agregar_proceso_manual)
+agregar_manual_button.pack()
 
-# Canvas para mostrar la memoria visualmente
+agregar_aleatorio_button = tk.Button(root, text="Agregar Proceso Aleatorio", command=agregar_proceso_aleatorio)
+agregar_aleatorio_button.pack()
+
+nuevos_listbox = tk.Listbox(root)
+nuevos_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+listos_listbox = tk.Listbox(root)
+listos_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+bloqueados_listbox = tk.Listbox(root)
+bloqueados_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+terminados_listbox = tk.Listbox(root)
+terminados_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
 canvas = tk.Canvas(root, width=500, height=500)
-canvas.grid(row=6, column=0, columnspan=4)
+canvas.pack()
 
-# Hilos para ejecutar las funciones concurrentemente
-threading.Thread(target=crear_procesos_automaticos, daemon=True).start()
-threading.Thread(target=ejecutar_procesos, daemon=True).start()
-threading.Thread(target=revisar_procesos_bloqueados, daemon=True).start()
-threading.Thread(target=nuevo_a_listo, daemon=True).start()
+ejecucion_label = tk.Label(root, text="")
+ejecucion_label.pack()
+
+mensaje_error = tk.Label(root, text="", fg="red")
+mensaje_error.pack()
+
+recursos_label = tk.Label(root, text="")
+recursos_label.pack()
+
+# Iniciar hilos para manejar los procesos
+hilo_nuevo_a_listo = threading.Thread(target=nuevo_a_listo, daemon=True)
+hilo_nuevo_a_listo.start()
+
+hilo_ejecucion = threading.Thread(target=ejecutar_procesos, daemon=True)
+hilo_ejecucion.start()
+
+hilo_revisar_bloqueados = threading.Thread(target=revisar_procesos_bloqueados, daemon=True)
+hilo_revisar_bloqueados.start()
 
 root.mainloop()
